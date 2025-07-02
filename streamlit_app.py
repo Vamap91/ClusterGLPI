@@ -28,7 +28,10 @@ class GLPIClusteringSystem:
             try:
                 # Tentar usar a chave do Streamlit secrets
                 if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
-                    self.client = OpenAI(api_key=st.secrets['OPENAI_API_KEY'])
+                    # Configuração simplificada da OpenAI
+                    self.client = OpenAI(
+                        api_key=st.secrets['OPENAI_API_KEY']
+                    )
                     st.success("✅ OpenAI configurado com sucesso!")
                 else:
                     st.warning("⚠️ Chave da OpenAI não encontrada. Usando método tradicional.")
