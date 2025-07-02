@@ -549,7 +549,7 @@ def main():
                         color=cluster_counts.values,
                         color_continuous_scale='viridis'
                     )
-                    fig_bar.update_xaxis(tickangle=45)
+                    fig_bar.update_layout(xaxis_tickangle=45)
                     st.plotly_chart(fig_bar, use_container_width=True)
                     
                     # Gráficos em duas colunas
