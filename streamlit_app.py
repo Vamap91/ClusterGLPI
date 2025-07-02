@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+from sklearn.feature_extraction.text import TfidfVectorizer
 import re
 from collections import Counter
 import streamlit as st
@@ -9,15 +10,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import base64
-import openai
-from openai import OpenAI
 import time
 import json
+
+# Importação condicional da OpenAI
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    st.warning("⚠️ OpenAI não instalado. Usando apenas método tradicional.")
 
 
 class GLPIClusteringSystem:
     def __init__(self, use_openai=True):
-        self.use_openai = use_openai
+        self.use_openai = use_openai and OPENAI_AVAILABLE
         self.client = None
         self.kmeans = None
         self.clusters_info = {}
@@ -26,19 +33,22 @@ class GLPIClusteringSystem:
         # Configurar OpenAI se disponível
         if self.use_openai:
             try:
-                # Tentar usar a chave do Streamlit secrets
+                # Verificar se a chave existe nos secrets
                 if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
-                    # Configuração simplificada da OpenAI
-                    self.client = OpenAI(
-                        api_key=st.secrets['OPENAI_API_KEY']
-                    )
-                    st.success("✅ OpenAI configurado com sucesso!")
+                    api_key = st.secrets['OPENAI_API_KEY']
+                    if api_key and api_key.startswith('sk-'):
+                        self.client = OpenAI(api_key=api_key)
+                        st.success("✅ OpenAI configurado com sucesso!")
+                    else:
+                        st.warning("⚠️ Chave da OpenAI inválida. Usando método tradicional.")
+                        self.use_openai = False
                 else:
-                    st.warning("⚠️ Chave da OpenAI não encontrada. Usando método tradicional.")
+                    st.info("ℹ️ Chave da OpenAI não encontrada. Usando método tradicional.")
                     self.use_openai = False
             except Exception as e:
                 st.warning(f"⚠️ Erro ao configurar OpenAI: {str(e)}. Usando método tradicional.")
                 self.use_openai = False
+                self.client = None
         
     def preprocess_text(self, text):
         """Pré-processamento específico para títulos de chamados técnicos"""
@@ -78,22 +88,23 @@ class GLPIClusteringSystem:
         else:
             return 'Outros'
     
-    def get_openai_embeddings(self, texts, batch_size=100):
+    def get_openai_embeddings(self, texts, batch_size=50):
         """Obtém embeddings usando OpenAI API com rate limiting"""
         if not self.client:
             raise ValueError("Cliente OpenAI não configurado")
         
         embeddings = []
         
-        # Processar em lotes para evitar rate limits
+        # Processar em lotes menores para evitar rate limits
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             
             try:
                 with st.spinner(f"Obtendo embeddings {i+1}-{min(i+batch_size, len(texts))} de {len(texts)}..."):
                     response = self.client.embeddings.create(
-                        model="text-embedding-3-small",  # Modelo mais eficiente
-                        input=batch
+                        model="text-embedding-3-small",
+                        input=batch,
+                        encoding_format="float"
                     )
                     
                     batch_embeddings = [data.embedding for data in response.data]
@@ -101,10 +112,11 @@ class GLPIClusteringSystem:
                     
                     # Rate limiting - pausa entre lotes
                     if i + batch_size < len(texts):
-                        time.sleep(1)
+                        time.sleep(0.5)
                         
             except Exception as e:
                 st.error(f"Erro ao obter embeddings: {str(e)}")
+                st.info("Tentando com método tradicional...")
                 raise e
         
         return np.array(embeddings)
@@ -149,30 +161,28 @@ class GLPIClusteringSystem:
         
         try:
             # Prepara os títulos mais representativos
-            sample_titles = cluster_titles[:10]  # Pega até 10 exemplos
+            sample_titles = cluster_titles[:8]  # Reduzido para evitar tokens em excesso
             titles_text = "\n".join([f"- {title}" for title in sample_titles])
             
-            prompt = f"""
-Analise os seguintes títulos de chamados técnicos e crie um nome descritivo para este grupo:
+            prompt = f"""Analise os títulos de chamados técnicos e crie um nome descritivo:
 
 {titles_text}
 
-Baseado nesses títulos, crie um nome conciso (máximo 3-4 palavras) que represente o tema principal deste cluster.
-O nome deve ser técnico e específico. Responda apenas com o nome, sem explicações.
-"""
+Crie um nome conciso (máximo 4 palavras) que represente o tema principal.
+Responda apenas com o nome, sem explicações."""
             
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "Você é um especialista em análise de chamados técnicos de TI."},
+                    {"role": "system", "content": "Você é um especialista em análise de chamados técnicos."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=50,
-                temperature=0.3
+                max_tokens=30,
+                temperature=0.1
             )
             
             cluster_name = response.choices[0].message.content.strip()
-            return cluster_name
+            return cluster_name if cluster_name else None
             
         except Exception as e:
             st.warning(f"Erro ao gerar nome com AI para cluster {cluster_id}: {str(e)}")
@@ -358,12 +368,19 @@ def main():
     
     # Verificar configuração da OpenAI
     openai_configured = False
-    if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
-        openai_configured = True
-        st.sidebar.success("🤖 OpenAI configurado")
+    if OPENAI_AVAILABLE and hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
+        api_key = st.secrets.get('OPENAI_API_KEY', '')
+        if api_key and api_key.startswith('sk-'):
+            openai_configured = True
+            st.sidebar.success("🤖 OpenAI configurado")
+        else:
+            st.sidebar.warning("⚠️ Chave OpenAI inválida")
     else:
         st.sidebar.warning("⚠️ OpenAI não configurado")
-        st.sidebar.info("Adicione OPENAI_API_KEY nos secrets do Streamlit para usar IA")
+        if not OPENAI_AVAILABLE:
+            st.sidebar.info("Instale: pip install openai")
+        else:
+            st.sidebar.info("Adicione OPENAI_API_KEY nos secrets")
     
     # Sidebar para configurações
     st.sidebar.header("⚙️ Configurações")
