@@ -362,7 +362,7 @@ def main():
     )
     
     # Header
-    st.title("🎯 Sistema de Clusterização de Chamados GLPI")
+    st.title("🎯 Sistema de Clusterização de Chamados GLPI feito para o IAGO")
     st.markdown("Sistema inteligente para agrupamento automático de chamados usando IA")
     st.markdown("---")
     
@@ -782,7 +782,7 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center'>
-        <p>🎯 Sistema de Clusterização GLPI | Desenvolvido com ❤️ usando Streamlit e OpenAI</p>
+        <p>🎯 Sistema de Clusterização GLPI | Desenvolvido por Vinicius Paschoa</p>
     </div>
     """, unsafe_allow_html=True)
 
