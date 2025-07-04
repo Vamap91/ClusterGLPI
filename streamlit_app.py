@@ -631,4 +631,9 @@ def main():
             st.sidebar.success("🤖 OpenAI configurado")
         else:
             st.sidebar.warning("⚠️ Chave OpenAI inválida")
-    else
+    else:
+        st.sidebar.warning("⚠️ OpenAI não configurado")
+        if not OPENAI_AVAILABLE:
+            st.sidebar.info("Instale: pip install openai")
+        else:
+            st.sidebar.info("Adicione OPENAI_API_KEY nos secrets")
