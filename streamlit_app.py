@@ -22,6 +22,97 @@ except ImportError:
     st.warning("⚠️ OpenAI não instalado. Usando apenas método tradicional.")
 
 
+class PriorityMatrix:
+    """Classe para gerenciar a Matriz de Impacto x Urgência"""
+    
+    def __init__(self):
+        # Matriz de SLA (horas)
+        self.sla_matrix = {
+            1: {1: 2, 2: 4, 3: 8, 4: 24, 5: 48},
+            2: {1: 4, 2: 8, 3: 24, 4: 48, 5: 120},
+            3: {1: 8, 2: 24, 3: 48, 4: 120, 5: 240},
+            4: {1: 24, 2: 48, 3: 120, 4: 120, 5: 240},
+            5: {1: 48, 2: 120, 3: 120, 4: 240, 5: 240}
+        }
+        
+        # Matriz de Prioridade
+        self.priority_matrix = {
+            1: {1: 'P1', 2: 'P2', 3: 'P3', 4: 'P4', 5: 'P5'},
+            2: {1: 'P2', 2: 'P3', 3: 'P4', 4: 'P5', 5: 'Planejado'},
+            3: {1: 'P3', 2: 'P4', 3: 'P5', 4: 'Planejado', 5: 'Backlog'},
+            4: {1: 'P4', 2: 'P5', 3: 'Planejado', 4: 'Planejado', 5: 'Backlog'},
+            5: {1: 'P5', 2: 'Planejado', 3: 'Planejado', 4: 'Planejado', 5: 'Backlog'}
+        }
+        
+        # Palavras-chave para classificação automática de Impacto
+        self.impacto_keywords = {
+            1: ['financeiro', 'faturamento', 'boleto', 'pagamento', 'reembolso', 'nota fiscal', 'api', 'integração', 'produção', 'parado', 'travado', 'fora'],
+            2: ['vendas', 'comercial', 'parceiro', 'cliente', 'sistema principal'],
+            3: ['administrativo', 'relatório', 'interno', 'time'],
+            4: ['exibição', 'visual', 'tela', 'erro pontual'],
+            5: ['melhoria', 'estética', 'cosmético', 'sugestão']
+        }
+        
+        # Palavras-chave para classificação automática de Urgência
+        self.urgencia_keywords = {
+            1: ['imediatamente', 'urgente', 'crítico', 'bloqueado', 'parado', 'fora'],
+            2: ['hoje', 'ainda hoje', 'agora', 'rapidamente'],
+            3: ['48h', 'dois dias', 'retrabalho'],
+            4: ['semana', 'impacto baixo'],
+            5: ['planejado', 'agendamento', 'futuro', 'quando possível']
+        }
+    
+    def classify_impact(self, title, keywords):
+        """Classifica o impacto baseado no título do chamado"""
+        if pd.isna(title):
+            return 3
+        
+        title_lower = str(title).lower()
+        
+        for impact_level, words in self.impacto_keywords.items():
+            for word in words:
+                if word in title_lower:
+                    return impact_level
+        
+        # Análise adicional por palavras-chave do cluster
+        if keywords:
+            keywords_str = ' '.join(keywords).lower()
+            for impact_level, words in self.impacto_keywords.items():
+                for word in words:
+                    if word in keywords_str:
+                        return impact_level
+        
+        return 3  # Impacto médio por padrão
+    
+    def classify_urgency(self, title):
+        """Classifica a urgência baseada no título do chamado"""
+        if pd.isna(title):
+            return 3
+        
+        title_lower = str(title).lower()
+        
+        for urgency_level, words in self.urgencia_keywords.items():
+            for word in words:
+                if word in title_lower:
+                    return urgency_level
+        
+        return 3  # Urgência média por padrão
+    
+    def get_priority_and_sla(self, impacto, urgencia):
+        """Retorna prioridade e SLA baseado na matriz"""
+        priority = self.priority_matrix[impacto][urgencia]
+        sla_hours = self.sla_matrix[impacto][urgencia]
+        return priority, sla_hours
+    
+    def format_sla(self, sla_hours):
+        """Formata SLA em formato legível"""
+        if sla_hours < 24:
+            return f"{sla_hours}h"
+        else:
+            days = sla_hours // 24
+            return f"{days}d"
+
+
 class GLPIClusteringSystem:
     def __init__(self, use_openai=True):
         self.use_openai = use_openai and OPENAI_AVAILABLE
@@ -29,6 +120,7 @@ class GLPIClusteringSystem:
         self.kmeans = None
         self.clusters_info = {}
         self.embeddings = None
+        self.priority_matrix = PriorityMatrix()
         
         # Configurar OpenAI se disponível
         if self.use_openai:
@@ -188,6 +280,29 @@ Responda apenas com o nome, sem explicações."""
             st.warning(f"Erro ao gerar nome com AI para cluster {cluster_id}: {str(e)}")
             return None
     
+    def classify_cluster_priority(self, cluster_data, cluster_info):
+        """Classifica prioridade do cluster baseado nos chamados"""
+        titles = cluster_data['Título'].tolist()
+        keywords = cluster_info.get('keywords', [])
+        
+        # Classificar impacto e urgência para cada chamado do cluster
+        impacts = [self.priority_matrix.classify_impact(title, keywords) for title in titles]
+        urgencies = [self.priority_matrix.classify_urgency(title) for title in titles]
+        
+        # Usar o impacto e urgência mais comuns no cluster
+        most_common_impact = max(set(impacts), key=impacts.count)
+        most_common_urgency = max(set(urgencies), key=urgencies.count)
+        
+        priority, sla_hours = self.priority_matrix.get_priority_and_sla(most_common_impact, most_common_urgency)
+        
+        return {
+            'impacto_padrao': most_common_impact,
+            'urgencia_padrao': most_common_urgency,
+            'prioridade_padrao': priority,
+            'sla_padrao': sla_hours,
+            'sla_formatado': self.priority_matrix.format_sla(sla_hours)
+        }
+    
     def fit_clusters(self, df, titulo_col='Título', auto_clusters=True, n_clusters=8):
         """Ajusta o modelo de clusterização aos dados"""
         # Pré-processamento
@@ -237,6 +352,9 @@ Responda apenas com o nome, sem explicações."""
         
         # Análise dos clusters
         self.analyze_clusters(df_clean)
+        
+        # Aplicar classificação de prioridade
+        self.apply_priority_classification(df_clean)
         
         return df_clean
     
@@ -297,6 +415,43 @@ Responda apenas com o nome, sem explicações."""
                     'usado_ai': ai_name is not None
                 }
     
+    def apply_priority_classification(self, df):
+        """Aplica classificação de prioridade aos clusters e chamados"""
+        # Adicionar colunas de prioridade ao DataFrame
+        df['Impacto'] = 0
+        df['Urgencia'] = 0
+        df['Prioridade'] = ''
+        df['SLA_Horas'] = 0
+        df['SLA_Formatado'] = ''
+        
+        with st.spinner("Aplicando classificação de prioridade..."):
+            for cluster_id in df['cluster'].unique():
+                cluster_data = df[df['cluster'] == cluster_id]
+                cluster_info = self.clusters_info[cluster_id]
+                
+                # Classificar prioridade do cluster
+                priority_info = self.classify_cluster_priority(cluster_data, cluster_info)
+                
+                # Adicionar informações de prioridade ao cluster_info
+                self.clusters_info[cluster_id].update(priority_info)
+                
+                # Aplicar classificação individual para cada chamado
+                for idx in cluster_data.index:
+                    titulo = df.loc[idx, 'Título']
+                    
+                    # Classificação individual
+                    impacto = self.priority_matrix.classify_impact(titulo, cluster_info['keywords'])
+                    urgencia = self.priority_matrix.classify_urgency(titulo)
+                    prioridade, sla_horas = self.priority_matrix.get_priority_and_sla(impacto, urgencia)
+                    sla_formatado = self.priority_matrix.format_sla(sla_horas)
+                    
+                    # Atualizar DataFrame
+                    df.loc[idx, 'Impacto'] = impacto
+                    df.loc[idx, 'Urgencia'] = urgencia
+                    df.loc[idx, 'Prioridade'] = prioridade
+                    df.loc[idx, 'SLA_Horas'] = sla_horas
+                    df.loc[idx, 'SLA_Formatado'] = sla_formatado
+    
     def predict_cluster(self, new_titles):
         """Prediz cluster para novos títulos"""
         if self.kmeans is None:
@@ -330,10 +485,35 @@ Responda apenas com o nome, sem explicações."""
                 'Sistema_Principal': info['sistema_principal'],
                 'Palavras_Chave': ', '.join(info['keywords'][:5]),
                 'Exemplo_Titulo': info['exemplos_titulos'][0] if info['exemplos_titulos'] else '',
+                'Prioridade_Padrao': info.get('prioridade_padrao', 'P3'),
+                'SLA_Padrao': info.get('sla_formatado', '8h'),
                 'IA_Usado': '🤖' if info['usado_ai'] else '📊'
             })
         
         return pd.DataFrame(summary_data)
+    
+    def get_priority_matrix_data(self, df):
+        """Retorna dados para visualização da matriz de prioridade"""
+        if df.empty:
+            return pd.DataFrame()
+        
+        # Criar matriz de contagem
+        matrix_data = []
+        for impacto in range(1, 6):
+            for urgencia in range(1, 6):
+                count = len(df[(df['Impacto'] == impacto) & (df['Urgencia'] == urgencia)])
+                priority, sla_hours = self.priority_matrix.get_priority_and_sla(impacto, urgencia)
+                sla_formatted = self.priority_matrix.format_sla(sla_hours)
+                
+                matrix_data.append({
+                    'Impacto': impacto,
+                    'Urgencia': urgencia,
+                    'Quantidade': count,
+                    'Prioridade': priority,
+                    'SLA': sla_formatted
+                })
+        
+        return pd.DataFrame(matrix_data)
 
 
 def create_download_link(df, filename):
@@ -346,6 +526,12 @@ def create_download_link(df, filename):
         if 'clustering_system' in st.session_state:
             cluster_summary = st.session_state['clustering_system'].get_cluster_summary()
             cluster_summary.to_excel(writer, sheet_name='Resumo_Clusters', index=False)
+            
+            # Adicionar aba com matriz de prioridade
+            if 'df_clustered' in st.session_state:
+                df_clustered = st.session_state['df_clustered']
+                matrix_data = st.session_state['clustering_system'].get_priority_matrix_data(df_clustered)
+                matrix_data.to_excel(writer, sheet_name='Matriz_Prioridade', index=False)
     
     output.seek(0)
     b64 = base64.b64encode(output.read()).decode()
@@ -496,8 +682,9 @@ def main():
                     st.metric("🤖 Clusters com IA", f"{ai_clusters}/{len(clustering_system.clusters_info)}")
                 
                 # Tabs para visualização
-                tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                     "📋 Resumo dos Clusters", 
+                    "🧭 Matriz de Prioridade",
                     "📊 Visualizações", 
                     "📝 Dados Detalhados", 
                     "🎯 Recomendações",
@@ -524,6 +711,11 @@ def main():
                                 st.write("**Sistema Principal:**")
                                 st.write(info['sistema_principal'])
                                 
+                                st.write("**Prioridade Padrão:**")
+                                priority_info = info.get('prioridade_padrao', 'P3')
+                                sla_info = info.get('sla_formatado', '8h')
+                                st.write(f"{priority_info} - SLA: {sla_info}")
+                                
                                 if info['urgencia_distribuicao']:
                                     st.write("**Distribuição de Urgência:**")
                                     for urgencia, count in info['urgencia_distribuicao'].items():
@@ -535,6 +727,97 @@ def main():
                                     st.write(f"• {titulo}")
                 
                 with tab2:
+                    st.subheader("🧭 Matriz de Impacto x Urgência")
+                    
+                    # Métricas de prioridade
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        p1_count = len(df_clustered[df_clustered['Prioridade'] == 'P1'])
+                        st.metric("🔥 P1 - Crítico", p1_count)
+                    
+                    with col2:
+                        p2_count = len(df_clustered[df_clustered['Prioridade'] == 'P2'])
+                        st.metric("🚨 P2 - Alto", p2_count)
+                    
+                    with col3:
+                        p3_count = len(df_clustered[df_clustered['Prioridade'] == 'P3'])
+                        st.metric("⚠️ P3 - Médio", p3_count)
+                    
+                    with col4:
+                        p4_p5_count = len(df_clustered[df_clustered['Prioridade'].isin(['P4', 'P5'])])
+                        st.metric("📋 P4/P5 - Baixo", p4_p5_count)
+                    
+                    # Matriz visual
+                    matrix_data = clustering_system.get_priority_matrix_data(df_clustered)
+                    
+                    if not matrix_data.empty:
+                        # Criar matriz pivot para visualização
+                        pivot_data = matrix_data.pivot(index='Impacto', columns='Urgencia', values='Quantidade').fillna(0)
+                        
+                        # Heatmap da matriz
+                        fig_matrix = px.imshow(
+                            pivot_data.values,
+                            x=[f"Urgência {i}" for i in range(1, 6)],
+                            y=[f"Impacto {i}" for i in range(1, 6)],
+                            color_continuous_scale='Reds',
+                            title="Distribuição de Chamados na Matriz Impacto x Urgência"
+                        )
+                        
+                        # Adicionar texto nas células
+                        for i in range(len(pivot_data.index)):
+                            for j in range(len(pivot_data.columns)):
+                                count = int(pivot_data.iloc[i, j])
+                                impacto = pivot_data.index[i]
+                                urgencia = pivot_data.columns[j]
+                                priority, sla_hours = clustering_system.priority_matrix.get_priority_and_sla(impacto, urgencia)
+                                sla_formatted = clustering_system.priority_matrix.format_sla(sla_hours)
+                                
+                                fig_matrix.add_annotation(
+                                    x=j, y=i,
+                                    text=f"{count}<br>{priority}<br>{sla_formatted}",
+                                    showarrow=False,
+                                    font=dict(color="white" if count > pivot_data.values.max()/2 else "black")
+                                )
+                        
+                        st.plotly_chart(fig_matrix, use_container_width=True)
+                    
+                    # Tabela da matriz de referência
+                    st.subheader("📊 Tabela de Referência - SLA por Prioridade")
+                    
+                    # Criar tabela de referência
+                    reference_data = []
+                    for impacto in range(1, 6):
+                        for urgencia in range(1, 6):
+                            priority, sla_hours = clustering_system.priority_matrix.get_priority_and_sla(impacto, urgencia)
+                            sla_formatted = clustering_system.priority_matrix.format_sla(sla_hours)
+                            count = len(df_clustered[(df_clustered['Impacto'] == impacto) & (df_clustered['Urgencia'] == urgencia)])
+                            
+                            reference_data.append({
+                                'Impacto': impacto,
+                                'Urgência': urgencia,
+                                'Prioridade': priority,
+                                'SLA': sla_formatted,
+                                'Quantidade_Chamados': count
+                            })
+                    
+                    reference_df = pd.DataFrame(reference_data)
+                    st.dataframe(reference_df, use_container_width=True)
+                    
+                    # Distribuição por prioridade
+                    st.subheader("📈 Distribuição por Prioridade")
+                    priority_counts = df_clustered['Prioridade'].value_counts()
+                    
+                    fig_priority = px.bar(
+                        x=priority_counts.index,
+                        y=priority_counts.values,
+                        title="Distribuição de Chamados por Prioridade",
+                        color=priority_counts.values,
+                        color_continuous_scale='RdYlBu_r'
+                    )
+                    st.plotly_chart(fig_priority, use_container_width=True)
+                
+                with tab3:
                     st.subheader("📊 Visualizações dos Clusters")
                     
                     # Gráfico de distribuição dos clusters
@@ -578,11 +861,11 @@ def main():
                             )
                             st.plotly_chart(fig_urgencia, use_container_width=True)
                 
-                with tab3:
+                with tab4:
                     st.subheader("📝 Dados Detalhados com Clusters")
                     
                     # Filtros
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
                         cluster_filter = st.multiselect(
@@ -599,6 +882,13 @@ def main():
                         )
                     
                     with col3:
+                        prioridade_filter = st.multiselect(
+                            "Filtrar por Prioridade:",
+                            options=sorted(df_clustered['Prioridade'].unique()),
+                            default=sorted(df_clustered['Prioridade'].unique())
+                        )
+                    
+                    with col4:
                         if 'Urgência' in df_clustered.columns:
                             urgencia_filter = st.multiselect(
                                 "Filtrar por Urgência:",
@@ -611,6 +901,7 @@ def main():
                     # Aplicar filtros
                     df_filtered = df_clustered[df_clustered['cluster'].isin(cluster_filter)]
                     df_filtered = df_filtered[df_filtered['sistema_prefix'].isin(sistema_filter)]
+                    df_filtered = df_filtered[df_filtered['Prioridade'].isin(prioridade_filter)]
                     
                     if urgencia_filter and 'Urgência' in df_clustered.columns:
                         df_filtered = df_filtered[df_filtered['Urgência'].isin(urgencia_filter)]
@@ -621,7 +912,7 @@ def main():
                     )
                     
                     # Reorganizar colunas
-                    cols_order = ['ID', 'Título', 'cluster', 'Nome_Cluster', 'sistema_prefix']
+                    cols_order = ['ID', 'Título', 'cluster', 'Nome_Cluster', 'sistema_prefix', 'Prioridade', 'SLA_Formatado', 'Impacto', 'Urgencia']
                     if 'Urgência' in df_filtered.columns:
                         cols_order.append('Urgência')
                     if 'Status' in df_filtered.columns:
@@ -629,19 +920,32 @@ def main():
                     
                     # Adicionar outras colunas
                     cols_order += [col for col in df_filtered.columns 
-                                  if col not in cols_order + ['titulo_processado']]
+                                  if col not in cols_order + ['titulo_processado', 'SLA_Horas']]
                     
                     df_display = df_filtered[cols_order]
                     
                     st.dataframe(df_display, use_container_width=True)
                     st.info(f"📊 Mostrando {len(df_filtered)} de {len(df_clustered)} registros")
                 
-                with tab4:
+                with tab5:
                     st.subheader("🎯 Recomendações para Direcionamento")
+                    
+                    # Análise de SLA crítico
+                    st.write("**⚠️ Alertas de SLA Crítico:**")
+                    p1_p2_count = len(df_clustered[df_clustered['Prioridade'].isin(['P1', 'P2'])])
+                    total_count = len(df_clustered)
+                    critical_percentage = (p1_p2_count / total_count) * 100
+                    
+                    if critical_percentage > 25:
+                        st.error(f"🚨 {critical_percentage:.1f}% dos chamados são P1/P2 - Considere revisar os processos!")
+                    elif critical_percentage > 15:
+                        st.warning(f"⚠️ {critical_percentage:.1f}% dos chamados são P1/P2 - Atenção necessária!")
+                    else:
+                        st.success(f"✅ {critical_percentage:.1f}% dos chamados são P1/P2 - Distribuição saudável!")
                     
                     # Análise de especialização por desenvolvedor
                     if 'Atribuído - Técnico' in df_clustered.columns:
-                        st.write("**Sugestões de Especialização por Desenvolvedor:**")
+                        st.write("**👥 Sugestões de Especialização por Desenvolvedor:**")
                         
                         tecnico_cluster = df_clustered.groupby(['Atribuído - Técnico', 'cluster']).size().reset_index(name='count')
                         
@@ -649,18 +953,40 @@ def main():
                             cluster_tecnicos = tecnico_cluster[tecnico_cluster['cluster'] == cluster_id]
                             if not cluster_tecnicos.empty:
                                 top_tecnico = cluster_tecnicos.loc[cluster_tecnicos['count'].idxmax()]
+                                priority_info = info.get('prioridade_padrao', 'P3')
+                                sla_info = info.get('sla_formatado', '8h')
                                 
-                                st.write(f"**{info['nome']}** → {top_tecnico['Atribuído - Técnico']} ({top_tecnico['count']} chamados)")
+                                st.write(f"**{info['nome']}** ({priority_info}) → {top_tecnico['Atribuído - Técnico']} ({top_tecnico['count']} chamados)")
                     
-                    # Análise de carga de trabalho
-                    st.write("**Análise de Distribuição de Carga:**")
+                    # Análise de carga de trabalho por prioridade
+                    st.write("**📊 Análise de Distribuição de Carga por Prioridade:**")
                     for cluster_id, info in clustering_system.clusters_info.items():
-                        if info['total_chamados'] > len(df_clustered) * 0.2:  # Mais de 20% dos chamados
+                        priority_info = info.get('prioridade_padrao', 'P3')
+                        if priority_info in ['P1', 'P2'] and info['total_chamados'] > 10:
+                            st.warning(f"⚠️ Cluster '{info['nome']}' ({priority_info}) tem muitos chamados críticos ({info['total_chamados']})")
+                        elif info['total_chamados'] > len(df_clustered) * 0.2:
                             st.warning(f"⚠️ Cluster '{info['nome']}' tem alta concentração ({info['total_chamados']} chamados)")
                         elif info['total_chamados'] < 5:
                             st.info(f"ℹ️ Cluster '{info['nome']}' tem poucos chamados ({info['total_chamados']})")
+                    
+                    # Recomendações de processo
+                    st.write("**🎯 Recomendações de Processo:**")
+                    
+                    # Análise de sistemas críticos
+                    sistemas_criticos = df_clustered[df_clustered['Prioridade'].isin(['P1', 'P2'])]['sistema_prefix'].value_counts()
+                    if not sistemas_criticos.empty:
+                        st.write("**Sistemas com mais chamados críticos:**")
+                        for sistema, count in sistemas_criticos.head(3).items():
+                            st.write(f"• {sistema}: {count} chamados P1/P2")
+                    
+                    # Sugestão de automação
+                    clusters_repetitivos = {k: v for k, v in clustering_system.clusters_info.items() if v['total_chamados'] > 15}
+                    if clusters_repetitivos:
+                        st.write("**🤖 Clusters candidatos à automação (>15 chamados):**")
+                        for cluster_id, info in clusters_repetitivos.items():
+                            st.write(f"• {info['nome']}: {info['total_chamados']} chamados")
                 
-                with tab5:
+                with tab6:
                     st.subheader("📥 Download dos Resultados")
                     
                     # Preparar dados para download
@@ -670,11 +996,11 @@ def main():
                     )
                     
                     # Remover colunas técnicas
-                    columns_to_remove = ['titulo_processado']
+                    columns_to_remove = ['titulo_processado', 'SLA_Horas']
                     df_download = df_download.drop(columns=[col for col in columns_to_remove if col in df_download.columns])
                     
                     # Reorganizar colunas
-                    cols_final = ['ID', 'Título', 'cluster', 'Nome_Cluster', 'sistema_prefix']
+                    cols_final = ['ID', 'Título', 'cluster', 'Nome_Cluster', 'sistema_prefix', 'Prioridade', 'SLA_Formatado', 'Impacto', 'Urgencia']
                     if 'Urgência' in df_download.columns:
                         cols_final.append('Urgência')
                     if 'Status' in df_download.columns:
@@ -686,20 +1012,23 @@ def main():
                     df_download = df_download[cols_final]
                     
                     # Estatísticas do download
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("📊 Total de Registros", len(df_download))
                     with col2:
                         st.metric("🎯 Clusters", df_download['cluster'].nunique())
                     with col3:
+                        p1_p2_count = len(df_download[df_download['Prioridade'].isin(['P1', 'P2'])])
+                        st.metric("🚨 P1/P2 Críticos", p1_p2_count)
+                    with col4:
                         ai_used = st.session_state.get('use_openai', False)
                         st.metric("🤖 IA Utilizada", "Sim" if ai_used else "Não")
                     
                     # Link para download
-                    download_link = create_download_link(df_download, "chamados_clusterizados.xlsx")
+                    download_link = create_download_link(df_download, "chamados_clusterizados_com_prioridade.xlsx")
                     st.markdown(download_link, unsafe_allow_html=True)
                     
-                    st.success("✅ Arquivo pronto para download com os clusters aplicados!")
+                    st.success("✅ Arquivo pronto para download com clusters e matriz de prioridade aplicados!")
                     
                     # Preview dos dados
                     st.subheader("👀 Preview dos Dados para Download")
@@ -708,10 +1037,13 @@ def main():
                     # Informações sobre o arquivo
                     st.info("""
                     **O arquivo Excel contém:**
-                    - Aba 'Chamados_Clusterizados': Todos os chamados com clusters aplicados
-                    - Aba 'Resumo_Clusters': Resumo detalhado de cada cluster
-                    - Coluna 'cluster': ID numérico do cluster
-                    - Coluna 'Nome_Cluster': Nome descritivo do cluster
+                    - Aba 'Chamados_Clusterizados': Todos os chamados com clusters e prioridades aplicadas
+                    - Aba 'Resumo_Clusters': Resumo detalhado de cada cluster com SLA padrão
+                    - Aba 'Matriz_Prioridade': Distribuição completa da matriz Impacto x Urgência
+                    - Coluna 'Prioridade': P1, P2, P3, P4, P5, Planejado, Backlog
+                    - Coluna 'SLA_Formatado': Tempo de atendimento esperado
+                    - Coluna 'Impacto': Nível de impacto no negócio (1-5)
+                    - Coluna 'Urgencia': Nível de urgência temporal (1-5)
                     """)
         
         except Exception as e:
@@ -753,6 +1085,11 @@ def main():
             - Identifica padrões nos títulos
             - Facilita direcionamento para especialistas
             
+            **🧭 Matriz de Prioridade:**
+            - Classificação automática Impacto x Urgência
+            - SLAs definidos por prioridade
+            - Alertas para chamados críticos
+            
             **🤖 Powered by AI:**
             - Usa embeddings da OpenAI para melhor precisão
             - Nomes de clusters gerados por IA
@@ -763,6 +1100,24 @@ def main():
             - Recomendações de direcionamento
             - Estatísticas detalhadas
             """)
+        
+        # Matriz de referência
+        st.subheader("🧭 Matriz de Prioridade - Referência")
+        st.write("""
+        **Escala de Impacto (1-5):**
+        - **1**: Crítico - Financeiro, Faturamento, Produção
+        - **2**: Alto - Vendas, Sistemas Principais
+        - **3**: Médio - Administrativo, Relatórios
+        - **4**: Baixo - Erros visuais, Falhas pontuais
+        - **5**: Muito Baixo - Melhorias, Estética
+        
+        **Escala de Urgência (1-5):**
+        - **1**: Imediato - Precisa ser resolvido agora
+        - **2**: Urgente - Ainda hoje
+        - **3**: Moderado - Até 48h
+        - **4**: Baixo - Na semana
+        - **5**: Planejável - Quando possível
+        """)
         
         # Exemplo de dados
         st.subheader("💡 Exemplo de Dados")
@@ -782,7 +1137,7 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center'>
-        <p>🎯 Sistema de Clusterização GLPI | Desenvolvido por Vinicius Paschoa</p>
+        <p>🎯 Sistema de Clusterização GLPI com Matriz de Prioridade | Desenvolvido por Vinicius Paschoa</p>
     </div>
     """, unsafe_allow_html=True)
 
