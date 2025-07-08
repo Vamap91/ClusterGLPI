@@ -548,7 +548,7 @@ def main():
     )
     
     # Header
-    st.title("🎯 Sistema de Clusterização de Chamados GLPI feito para o IAGO")
+    st.title("🎯 Sistema de Clusterização de Chamados GLPI")
     st.markdown("Sistema inteligente para agrupamento automático de chamados usando IA")
     st.markdown("---")
     
